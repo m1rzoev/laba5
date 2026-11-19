@@ -27,6 +27,22 @@ def get_db():
 def health():
     return jsonify({"status": "ok", "message": "Сервер работает стабильно"}), 200
 
+# НОВЫЙ МАРШРУТ СТАТИСТИКИ
+@app.route('/api/tasks/stats', methods=['GET'])
+def get_stats():
+    conn = get_db()
+    total = conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]
+    completed = conn.execute('SELECT COUNT(*) FROM tasks WHERE completed = 1').fetchone()[0]
+    active = total - completed
+    percent = round((completed / total) * 100) if total > 0 else 0
+    conn.close()
+    return jsonify({
+        "total": total,
+        "completed": completed,
+        "active": active,
+        "completion_percent": percent
+    }), 200
+
 @app.route('/api/tasks', methods=['GET'])
 def get_tasks():
     q = request.args.get('q', '').strip()
@@ -54,12 +70,10 @@ def get_tasks():
     elif status == 'completed':
         where_clause += ' AND completed = 1'
 
-    # Считаем общее количество для пагинации
     count_query = f'SELECT COUNT(*) FROM tasks {where_clause}'
     total = conn.execute(count_query, params).fetchone()[0]
     total_pages = math.ceil(total / limit) if total > 0 else 0
 
-    # Получаем задачи с лимитом и смещением
     offset = (page - 1) * limit
     query = f'SELECT * FROM tasks {where_clause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
     tasks = conn.execute(query, params + [limit, offset]).fetchall()
