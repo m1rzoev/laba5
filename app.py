@@ -31,36 +31,51 @@ def health():
 def get_tasks():
     q = request.args.get('q', '').strip()
     status = request.args.get('status', 'all')
+    page = request.args.get('page', 1, type=int)
+    limit = request.args.get('limit', 10, type=int)
 
     if status not in ['all', 'active', 'completed']:
         return jsonify({"error": "Неверный статус"}), 400
+    if page < 1 or limit < 1 or limit > 50:
+        return jsonify({"error": "Неверные параметры пагинации"}), 400
 
     conn = get_db()
-    # Регистрируем функцию для правильного поиска кириллицы без учета регистра
     conn.create_function("LOWER_UNICODE", 1, lambda x: x.lower() if x else x)
 
-    query = 'SELECT * FROM tasks WHERE 1=1'
+    where_clause = 'WHERE 1=1'
     params = []
 
     if q:
-        query += ' AND LOWER_UNICODE(title) LIKE ?'
+        where_clause += ' AND LOWER_UNICODE(title) LIKE ?'
         params.append(f'%{q.lower()}%')
 
     if status == 'active':
-        query += ' AND completed = 0'
+        where_clause += ' AND completed = 0'
     elif status == 'completed':
-        query += ' AND completed = 1'
+        where_clause += ' AND completed = 1'
 
-    # Сортировка: сначала новые
-    query += ' ORDER BY created_at DESC, id DESC'
+    # Считаем общее количество для пагинации
+    count_query = f'SELECT COUNT(*) FROM tasks {where_clause}'
+    total = conn.execute(count_query, params).fetchone()[0]
+    total_pages = math.ceil(total / limit) if total > 0 else 0
 
-    tasks = conn.execute(query, params).fetchall()
+    # Получаем задачи с лимитом и смещением
+    offset = (page - 1) * limit
+    query = f'SELECT * FROM tasks {where_clause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
+    tasks = conn.execute(query, params + [limit, offset]).fetchall()
     conn.close()
 
     tasks_list = [dict(task) for task in tasks]
     for task in tasks_list:
         task['completed'] = bool(task['completed'])
-    return jsonify(tasks_list), 200
+
+    return jsonify({
+        "items": tasks_list,
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "total_pages": total_pages
+    }), 200
 
 @app.route('/api/tasks', methods=['POST'])
 def add_task():
@@ -93,7 +108,6 @@ def update_task(task_id):
         if not (1 <= len(title) <= 200):
             conn.close()
             return jsonify({"error": "Название должно быть от 1 до 200 символов"}), 400
-    
     if 'completed' in data:
         if not isinstance(data['completed'], bool):
             conn.close()
@@ -102,8 +116,7 @@ def update_task(task_id):
     new_title = data.get('title', task['title']).strip()
     new_completed = data.get('completed', bool(task['completed']))
 
-    conn.execute('UPDATE tasks SET title = ?, completed = ? WHERE id = ?', 
-                 (new_title, new_completed, task_id))
+    conn.execute('UPDATE tasks SET title = ?, completed = ? WHERE id = ?', (new_title, new_completed, task_id))
     conn.commit()
     conn.close()
     return jsonify({"id": task_id, "title": new_title, "completed": new_completed}), 200
@@ -115,7 +128,6 @@ def delete_task(task_id):
     if not task:
         conn.close()
         return jsonify({"error": "Задача не найдена"}), 404
-
     conn.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
     conn.commit()
     conn.close()
